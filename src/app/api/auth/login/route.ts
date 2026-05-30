@@ -4,7 +4,8 @@ import { cookies } from "next/headers";
 import { promises as fs } from "fs";
 import path from "path";
 
-const SETTINGS_FILE = path.join(process.cwd(), ".thumbgen-settings.json");
+const SETTINGS_FILE = process.env.SERMONTHUMB_SETTINGS_PATH
+  || path.join(/*turbopackIgnore: true*/ process.cwd(), ".thumbgen-settings.json");
 
 export async function GET(request: NextRequest) {
   // Read creds from the persisted settings file (never from query params)

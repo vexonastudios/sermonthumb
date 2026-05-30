@@ -163,7 +163,7 @@ export default function SettingsPage() {
           <button onClick={() => router.back()} style={{ background: "transparent", border: "1px solid var(--border)", borderRadius: 8, padding: "6px 12px", color: "var(--text-secondary)", fontSize: "0.85rem", cursor: "pointer" }}>← Back</button>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span style={{ fontSize: 26 }}>🎬</span>
-            <span style={{ fontWeight: 800, fontSize: "1.15rem", background: "linear-gradient(135deg, #f0f4ff, #a5b4fc)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>ThumbGen</span>
+            <span style={{ fontWeight: 800, fontSize: "1.15rem", background: "linear-gradient(135deg, #f0f4ff, #a5b4fc)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>SermonThumb</span>
             <span style={{ color: "var(--text-muted)", fontSize: "0.9rem" }}>/ Settings</span>
           </div>
         </div>

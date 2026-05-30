@@ -1,5 +1,6 @@
 const { app, BrowserWindow, shell, dialog, ipcMain } = require("electron");
 const path = require("path");
+const fs = require("fs");
 const { spawn } = require("child_process");
 const http = require("http");
 const { autoUpdater } = require("electron-updater");
@@ -11,6 +12,26 @@ const NEXT_URL  = `http://127.0.0.1:${NEXT_PORT}`;
 // In a packaged app, process.resourcesPath points to the app.asar/resources dir.
 // We detect prod by checking if the app is packaged.
 const IS_PROD = app.isPackaged;
+
+// ─── Settings file path ──────────────────────────────────────────────────────
+// In production, store settings in the user data directory (AppData on Windows)
+// so they persist across updates and are writable. In dev, use project root.
+function getSettingsPath() {
+  if (IS_PROD) {
+    return path.join(app.getPath("userData"), ".thumbgen-settings.json");
+  }
+  return path.join(__dirname, "..", ".thumbgen-settings.json");
+}
+
+// ─── Read settings from disk ─────────────────────────────────────────────────
+function readSettingsSync() {
+  try {
+    const raw = fs.readFileSync(getSettingsPath(), "utf-8");
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
 
 // ─── Recognise BOTH 127.0.0.1 and localhost as "our" app ─────────────────────
 function isLocalUrl(url) {
@@ -79,24 +100,52 @@ function startNextDev() {
 // ─── Start standalone Next.js server (production) ────────────────────────────
 function startNextProd() {
   return new Promise((resolve, reject) => {
-    // In a packaged app, resources are at process.resourcesPath/app.asar (or
-    // unpacked equivalent). The standalone server.js is at:
-    //   resources/app/.next/standalone/server.js
-    const serverJs = path.join(
-      IS_PROD ? process.resourcesPath : path.join(__dirname, ".."),
-      IS_PROD ? "app" : "",
-      ".next", "standalone", "server.js"
+    // In a packaged app, resources are at process.resourcesPath.
+    // The standalone server.js is at: resources/app/.next/standalone/server.js
+    const standaloneDir = path.join(
+      process.resourcesPath,
+      "app", ".next", "standalone"
     );
+    const serverJs = path.join(standaloneDir, "server.js");
+
+    // Ensure the settings file is accessible from the standalone server's cwd.
+    // The settings API route reads from path.join(process.cwd(), ".thumbgen-settings.json").
+    // We symlink/copy the user-data settings file into the standalone dir so it's found.
+    const settingsSrc  = getSettingsPath();
+    const settingsDest = path.join(standaloneDir, ".thumbgen-settings.json");
+    try {
+      // Copy settings file into standalone dir (if it exists)
+      if (fs.existsSync(settingsSrc)) {
+        fs.copyFileSync(settingsSrc, settingsDest);
+      }
+    } catch (e) {
+      console.warn("[main] Could not copy settings to standalone dir:", e.message);
+    }
+
+    // Read settings to inject as env vars for the Next.js server
+    const settings = readSettingsSync();
 
     const env = {
       ...process.env,
-      PORT:     String(NEXT_PORT),
-      HOSTNAME: "127.0.0.1",
-      NODE_ENV: "production",
+      PORT:                    String(NEXT_PORT),
+      HOSTNAME:                "127.0.0.1",
+      NODE_ENV:                "production",
+      // Make Electron binary behave as plain Node.js
+      ELECTRON_RUN_AS_NODE:    "1",
+      // Inject API keys from user settings into the server environment
+      YOUTUBE_CLIENT_ID:       settings.youtubeClientId     || process.env.YOUTUBE_CLIENT_ID     || "",
+      YOUTUBE_CLIENT_SECRET:   settings.youtubeClientSecret || process.env.YOUTUBE_CLIENT_SECRET || "",
+      YOUTUBE_REDIRECT_URI:    settings.youtubeRedirectUri  || process.env.YOUTUBE_REDIRECT_URI  || `http://127.0.0.1:${NEXT_PORT}/api/auth/callback`,
+      GEMINI_API_KEY:          settings.geminiApiKey         || process.env.GEMINI_API_KEY         || "",
+      FAL_API_KEY:             settings.falAiApiKey          || process.env.FAL_API_KEY             || "",
+      // Tell the server where the settings file lives (for the settings API route)
+      SERMONTHUMB_SETTINGS_PATH: settingsSrc,
     };
 
+    // Use process.execPath (Electron binary) with ELECTRON_RUN_AS_NODE=1
+    // This makes it behave as a standard Node.js runtime
     nextProcess = spawn(process.execPath, [serverJs], {
-      cwd:        path.dirname(serverJs),
+      cwd:         standaloneDir,
       env,
       windowsHide: true,
     });
@@ -116,7 +165,7 @@ function createWindow() {
     height:    900,
     minWidth:  900,
     minHeight: 600,
-    title:     "ThumbGen",
+    title:     "SermonThumb",
     backgroundColor: "#0a0d14",
     webPreferences: {
       nodeIntegration:  false,
@@ -228,8 +277,8 @@ function setupAutoUpdater() {
 
     dialog.showMessageBox(mainWindow || undefined, {
       type:    "info",
-      title:   "Update Ready — ThumbGen",
-      message: `ThumbGen v${info.version} is ready to install.`,
+      title:   "Update Ready — SermonThumb",
+      message: `SermonThumb v${info.version} is ready to install.`,
       detail:  "The update has been downloaded. Restart now to apply it, or continue working and it will install when you quit.",
       buttons: ["Restart & Install", "Later"],
       defaultId: 0,
@@ -271,6 +320,11 @@ ipcMain.handle("install-update", () => {
   autoUpdater.quitAndInstall();
 });
 
+// ─── IPC: get/set settings path for renderer ──────────────────────────────────
+ipcMain.handle("get-settings-path", () => {
+  return getSettingsPath();
+});
+
 // ─── App lifecycle ────────────────────────────────────────────────────────────
 app.whenReady().then(async () => {
   const alreadyRunning = await isNextRunning();
@@ -288,6 +342,10 @@ app.whenReady().then(async () => {
       setupAutoUpdater();
     } catch (err) {
       console.error("Failed to start Next.js production server:", err);
+      dialog.showErrorBox(
+        "SermonThumb — Startup Error",
+        `Failed to start the application server.\n\n${err.message}\n\nPlease try reinstalling the application.`
+      );
       app.quit();
     }
   } else {
@@ -313,6 +371,22 @@ app.on("activate", () => {
 });
 
 app.on("before-quit", () => {
+  // In production, sync settings back from standalone dir to user data
+  if (IS_PROD) {
+    try {
+      const standaloneSettings = path.join(
+        process.resourcesPath,
+        "app", ".next", "standalone", ".thumbgen-settings.json"
+      );
+      const userDataSettings = getSettingsPath();
+      if (fs.existsSync(standaloneSettings)) {
+        fs.copyFileSync(standaloneSettings, userDataSettings);
+      }
+    } catch (e) {
+      console.warn("[main] Could not sync settings on quit:", e.message);
+    }
+  }
+
   if (nextProcess) { nextProcess.kill(); nextProcess = null; }
 });
 

@@ -34,7 +34,7 @@ function LandingContent() {
       {/* Logo */}
       <div style={{ textAlign: "center", animation: "fadeIn 0.6s ease-out" }}>
         <div style={{ width: 80, height: 80, borderRadius: 20, background: "linear-gradient(135deg, #5865f2, #e53e6e)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 1.5rem", fontSize: 40, boxShadow: "0 0 40px rgba(88,101,242,0.4)" }}>🎬</div>
-        <h1 style={{ fontSize: "clamp(2.5rem, 5vw, 4rem)", fontWeight: 900, letterSpacing: "-0.03em", background: "linear-gradient(135deg, #f0f4ff 0%, #a5b4fc 100%)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", marginBottom: "1rem" }}>ThumbGen</h1>
+        <h1 style={{ fontSize: "clamp(2.5rem, 5vw, 4rem)", fontWeight: 900, letterSpacing: "-0.03em", background: "linear-gradient(135deg, #f0f4ff 0%, #a5b4fc 100%)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", marginBottom: "1rem" }}>SermonThumb</h1>
         <p style={{ fontSize: "1.1rem", color: "var(--text-secondary)", maxWidth: 520, lineHeight: 1.6, margin: "0 auto 0.4rem" }}>
           Automatically generate professional YouTube thumbnails for sermon videos using AI.
         </p>

@@ -1,6 +1,6 @@
 {
   "name": "sermonthumb",
-  "version": "1.0.0",
+  "version": "1.0.4",
   "description": "AI-powered sermon thumbnail maker for churches by Vexona Studios",
   "private": true,
   "main": "electron/main.js",
@@ -18,6 +18,7 @@
     "appId": "com.vexonastudios.sermonthumb",
     "productName": "SermonThumb",
     "copyright": "Copyright © 2025 Vexona Studios",
+    "asar": false,
     "directories": {
       "output": "dist"
     },
@@ -46,14 +47,37 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "node_modules/@img",
+        "to": "app/.next/standalone/node_modules/@img",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "node_modules/sharp",
+        "to": "app/.next/standalone/node_modules/sharp",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "node_modules/@ffmpeg-installer",
+        "to": "app/.next/standalone/node_modules/@ffmpeg-installer",
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "win": {
       "target": [
         "nsis"
       ],
-      "icon": "public/icon.png"
+      "icon": "public/icon.png",
+      "signAndEditExecutable": false
     },
+    "forceCodeSigning": false,
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
@@ -81,6 +105,7 @@
     "sharp": "^0.34.5"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.0.4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

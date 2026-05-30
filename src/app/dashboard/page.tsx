@@ -172,7 +172,7 @@ export default function DashboardPage() {
               WebkitTextFillColor: "transparent",
             }}
           >
-            ThumbGen
+            SermonThumb
           </span>
         </div>
 

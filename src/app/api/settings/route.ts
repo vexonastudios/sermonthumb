@@ -2,8 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { promises as fs } from "fs";
 import path from "path";
 
-// Store settings next to the project root — persists across Electron relaunches
-const SETTINGS_FILE = path.join(process.cwd(), ".thumbgen-settings.json");
+// Store settings in a stable location — the Electron main process sets
+// SERMONTHUMB_SETTINGS_PATH in production to point to the user data directory.
+// In dev, fall back to the project root.
+const SETTINGS_FILE = process.env.SERMONTHUMB_SETTINGS_PATH
+  || path.join(/*turbopackIgnore: true*/ process.cwd(), ".thumbgen-settings.json");
 
 async function readSettings(): Promise<Record<string, unknown>> {
   try {

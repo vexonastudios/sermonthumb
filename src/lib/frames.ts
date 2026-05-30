@@ -3,11 +3,39 @@
  */
 import path from "path";
 import fs from "fs/promises";
+import { existsSync } from "fs";
 import os from "os";
 import { exec } from "child_process";
 import { promisify } from "util";
 
 const execAsync = promisify(exec);
+
+/**
+ * Resolve the ffmpeg binary path, handling both dev and packaged Electron app.
+ * In production, the binary is bundled via extraResources to
+ * resources/app/.next/standalone/node_modules/@ffmpeg-installer/
+ */
+function getFfmpegPath(): string {
+  // First try the standard require() path (works in dev)
+  try {
+    const pkg = require("@ffmpeg-installer/ffmpeg");
+    if (pkg.path && existsSync(pkg.path)) return pkg.path;
+  } catch {
+    // Module not found at default location — try production path
+  }
+
+  // Production: check relative to the standalone server's node_modules
+  const prodPath = path.join(
+    process.cwd(),
+    "node_modules", "@ffmpeg-installer", "ffmpeg", "platforms",
+    `${process.platform}-${process.arch}`,
+    process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg"
+  );
+  if (existsSync(prodPath)) return prodPath;
+
+  // Last resort: hope it's on PATH
+  return process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
+}
 
 /**
  * Extract frames from a video URL at specified timestamps
@@ -20,8 +48,7 @@ export async function extractFrames(
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "thumb-"));
 
   try {
-    // Get ffmpeg binary path
-    const ffmpegPath = require("@ffmpeg-installer/ffmpeg").path;
+    const ffmpegPath = getFfmpegPath();
     
     const frames: string[] = [];
 

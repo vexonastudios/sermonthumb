@@ -9,7 +9,7 @@ const montserrat = Montserrat({ subsets: ["latin"], weight: "800",  variable: "-
 const teko       = Teko({       subsets: ["latin"], weight: "600",  variable: "--font-teko"       });
 
 export const metadata: Metadata = {
-  title: "ThumbGen — Auto YouTube Thumbnail Generator",
+  title: "SermonThumb — Auto YouTube Thumbnail Generator",
   description:
     "Automatically generate professional YouTube thumbnails for church sermons using AI. Connects to YouTube API for one-click upload.",
 };
