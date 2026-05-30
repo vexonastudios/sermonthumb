@@ -84,8 +84,8 @@ export async function GET(req: NextRequest) {
       thumbnailUrl,
       hasThumbnail: hasCustomThumb,
       channelTitle: v.snippet?.channelTitle || "",
-      viewCount: v.statistics?.viewCount,
-      likeCount: v.statistics?.likeCount,
+      viewCount: v.statistics?.viewCount ?? undefined,
+      likeCount: v.statistics?.likeCount ?? undefined,
     };
 
     return NextResponse.json({ video });

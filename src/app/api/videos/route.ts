@@ -96,8 +96,8 @@ export async function GET() {
         thumbnailUrl,
         hasThumbnail: hasCustomThumb,
         channelTitle: v.snippet?.channelTitle || "",
-        viewCount: v.statistics?.viewCount,
-        likeCount: v.statistics?.likeCount,
+        viewCount: v.statistics?.viewCount ?? undefined,
+        likeCount: v.statistics?.likeCount ?? undefined,
       };
     });
 
