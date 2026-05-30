@@ -1,15 +1,18 @@
-const { app, BrowserWindow, shell } = require("electron");
+const { app, BrowserWindow, shell, dialog, ipcMain } = require("electron");
 const path = require("path");
 const { spawn } = require("child_process");
 const http = require("http");
+const { autoUpdater } = require("electron-updater");
 
 const NEXT_PORT = 3001;
 const NEXT_URL  = `http://127.0.0.1:${NEXT_PORT}`;
 
+// ─── Dev vs Production ────────────────────────────────────────────────────────
+// In a packaged app, process.resourcesPath points to the app.asar/resources dir.
+// We detect prod by checking if the app is packaged.
+const IS_PROD = app.isPackaged;
+
 // ─── Recognise BOTH 127.0.0.1 and localhost as "our" app ─────────────────────
-// Google redirects back to whichever redirect_uri we registered, which may be
-// localhost even though Electron loads via 127.0.0.1.  Without this, the
-// callback falls through to shell.openExternal → system browser.
 function isLocalUrl(url) {
   return (
     url.startsWith(`http://127.0.0.1:${NEXT_PORT}`) ||
@@ -55,8 +58,8 @@ function waitForNext(timeout = 90000) {
   });
 }
 
-// ─── Start Next.js dev server (Windows-safe) ─────────────────────────────────
-function startNextServer() {
+// ─── Start Next.js dev server (development only) ─────────────────────────────
+function startNextDev() {
   return new Promise((resolve, reject) => {
     nextProcess = spawn("npm", ["run", "dev", "--", "--port", String(NEXT_PORT)], {
       cwd: path.join(__dirname, ".."),
@@ -73,6 +76,39 @@ function startNextServer() {
   });
 }
 
+// ─── Start standalone Next.js server (production) ────────────────────────────
+function startNextProd() {
+  return new Promise((resolve, reject) => {
+    // In a packaged app, resources are at process.resourcesPath/app.asar (or
+    // unpacked equivalent). The standalone server.js is at:
+    //   resources/app/.next/standalone/server.js
+    const serverJs = path.join(
+      IS_PROD ? process.resourcesPath : path.join(__dirname, ".."),
+      IS_PROD ? "app" : "",
+      ".next", "standalone", "server.js"
+    );
+
+    const env = {
+      ...process.env,
+      PORT:     String(NEXT_PORT),
+      HOSTNAME: "127.0.0.1",
+      NODE_ENV: "production",
+    };
+
+    nextProcess = spawn(process.execPath, [serverJs], {
+      cwd:        path.dirname(serverJs),
+      env,
+      windowsHide: true,
+    });
+
+    nextProcess.stdout.on("data", (d) => process.stdout.write(`[next-prod] ${d}`));
+    nextProcess.stderr.on("data", (d) => process.stderr.write(`[next-prod] ${d}`));
+    nextProcess.on("error", reject);
+
+    waitForNext(60000).then(resolve).catch(reject);
+  });
+}
+
 // ─── Create the Electron window ───────────────────────────────────────────────
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -86,8 +122,9 @@ function createWindow() {
       nodeIntegration:  false,
       contextIsolation: true,
       webSecurity:      true,
+      preload:          path.join(__dirname, "preload.js"),
     },
-    show: true,
+    show: false,
   });
 
   mainWindow.once("ready-to-show", () => {
@@ -98,7 +135,6 @@ function createWindow() {
   mainWindow.loadURL(NEXT_URL);
 
   // ─── Navigation guard ─────────────────────────────────────────────────────
-  // Keep OAuth and local pages inside Electron; everything else → system browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (isLocalUrl(url) || isGoogleUrl(url)) return { action: "allow" };
     shell.openExternal(url);
@@ -106,18 +142,15 @@ function createWindow() {
   });
 
   mainWindow.webContents.on("will-navigate", (event, url) => {
-    if (isLocalUrl(url) || isGoogleUrl(url)) return; // allow inside Electron
+    if (isLocalUrl(url) || isGoogleUrl(url)) return;
     event.preventDefault();
     shell.openExternal(url);
   });
 
-  // ─── Intercept new windows that Electron creates for OAuth ───────────────
-  // When Electron opens a child window for the Google sign-in page, intercept
-  // its navigation so the callback (localhost or 127.0.0.1) comes back here.
+  // ─── Intercept child windows (OAuth) ─────────────────────────────────────
   app.on("web-contents-created", (_e, wc) => {
     wc.on("will-navigate", (event, url) => {
       if (isLocalUrl(url) || isGoogleUrl(url)) {
-        // Redirect the callback into the main window instead of the child
         if (isLocalUrl(url) && mainWindow) {
           event.preventDefault();
           mainWindow.loadURL(url);
@@ -155,6 +188,89 @@ function createWindow() {
   mainWindow.on("closed", () => { mainWindow = null; });
 }
 
+// ─── Auto-Updater ─────────────────────────────────────────────────────────────
+function setupAutoUpdater() {
+  // Don't check for updates in dev mode
+  if (!IS_PROD) return;
+
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on("checking-for-update", () => {
+    console.log("[updater] Checking for update…");
+  });
+
+  autoUpdater.on("update-available", (info) => {
+    console.log(`[updater] Update available: v${info.version}`);
+    // Notify renderer so it can show a subtle banner
+    if (mainWindow) {
+      mainWindow.webContents.send("update-available", { version: info.version });
+    }
+  });
+
+  autoUpdater.on("update-not-available", () => {
+    console.log("[updater] Already on latest version.");
+  });
+
+  autoUpdater.on("download-progress", (progress) => {
+    const pct = Math.round(progress.percent);
+    console.log(`[updater] Downloading… ${pct}%`);
+    if (mainWindow) {
+      mainWindow.webContents.send("update-download-progress", { percent: pct });
+    }
+  });
+
+  autoUpdater.on("update-downloaded", (info) => {
+    console.log(`[updater] Update downloaded: v${info.version}`);
+    if (mainWindow) {
+      mainWindow.webContents.send("update-downloaded", { version: info.version });
+    }
+
+    dialog.showMessageBox(mainWindow || undefined, {
+      type:    "info",
+      title:   "Update Ready — ThumbGen",
+      message: `ThumbGen v${info.version} is ready to install.`,
+      detail:  "The update has been downloaded. Restart now to apply it, or continue working and it will install when you quit.",
+      buttons: ["Restart & Install", "Later"],
+      defaultId: 0,
+      cancelId:  1,
+    }).then(({ response }) => {
+      if (response === 0) {
+        autoUpdater.quitAndInstall();
+      }
+    });
+  });
+
+  autoUpdater.on("error", (err) => {
+    console.error("[updater] Error:", err.message);
+  });
+
+  // Check on startup, then every 4 hours
+  try {
+    autoUpdater.checkForUpdatesAndNotify();
+  } catch (e) {
+    console.error("[updater] Startup check failed:", e);
+  }
+  setInterval(() => {
+    try { autoUpdater.checkForUpdatesAndNotify(); } catch (e) { /* ignore */ }
+  }, 4 * 60 * 60 * 1000);
+}
+
+// ─── IPC: manual update check from renderer ───────────────────────────────────
+ipcMain.handle("check-for-updates", async () => {
+  if (!IS_PROD) return { status: "dev-mode" };
+  try {
+    const result = await autoUpdater.checkForUpdates();
+    return { status: "checked", updateInfo: result?.updateInfo ?? null };
+  } catch (e) {
+    return { status: "error", message: e.message };
+  }
+});
+
+ipcMain.handle("install-update", () => {
+  autoUpdater.quitAndInstall();
+});
+
 // ─── App lifecycle ────────────────────────────────────────────────────────────
 app.whenReady().then(async () => {
   const alreadyRunning = await isNextRunning();
@@ -162,12 +278,25 @@ app.whenReady().then(async () => {
   if (alreadyRunning) {
     console.log("Next.js already running — opening window.");
     createWindow();
-  } else {
-    console.log("Starting Next.js…");
+    setupAutoUpdater();
+  } else if (IS_PROD) {
+    console.log("Starting Next.js standalone server…");
     try {
-      await startNextServer();
-      console.log("Next.js ready — opening window.");
+      await startNextProd();
+      console.log("Next.js production server ready — opening window.");
       createWindow();
+      setupAutoUpdater();
+    } catch (err) {
+      console.error("Failed to start Next.js production server:", err);
+      app.quit();
+    }
+  } else {
+    console.log("Starting Next.js dev server…");
+    try {
+      await startNextDev();
+      console.log("Next.js dev server ready — opening window.");
+      createWindow();
+      setupAutoUpdater();
     } catch (err) {
       console.error("Failed to start Next.js:", err);
       app.quit();
@@ -186,3 +315,6 @@ app.on("activate", () => {
 app.on("before-quit", () => {
   if (nextProcess) { nextProcess.kill(); nextProcess = null; }
 });
+
+process.on("unhandledRejection", (reason) => { console.error("Unhandled Rejection:", reason); });
+process.on("uncaughtException", (error)  => { console.error("Uncaught Exception:", error); });
