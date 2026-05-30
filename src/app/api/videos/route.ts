@@ -27,8 +27,6 @@ export async function GET() {
       accessToken,
       refreshToken,
       500, // fetch up to 500 videos
-      undefined,
-      { clientId: clientId || "", clientSecret: clientSecret || "", redirectUri: redirectUri || "" },
       (tokens) => {
         if (tokens.access_token) {
           cookieStore.set("yt_access_token", tokens.access_token, {
@@ -41,7 +39,8 @@ export async function GET() {
             httpOnly: true, secure: process.env.NODE_ENV === "production", path: "/", maxAge: 60 * 60 * 24 * 30
           });
         }
-      }
+      },
+      { clientId: clientId || "", clientSecret: clientSecret || "", redirectUri: redirectUri || "" }
     );
 
     // Filter rules:
