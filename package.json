@@ -1,6 +1,6 @@
 {
   "name": "sermonthumb",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "AI-powered sermon thumbnail maker for churches by Vexona Studios",
   "private": true,
   "main": "electron/main.js",
@@ -87,7 +87,7 @@
       {
         "provider": "github",
         "owner": "vexonastudios",
-        "repo": "sermon-thumbnail-maker",
+        "repo": "sermonthumb",
         "releaseType": "release"
       }
     ]
