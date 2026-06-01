@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, dialog, ipcMain } = require("electron");
+const { app, BrowserWindow, shell, dialog, ipcMain, Menu } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { spawn } = require("child_process");
@@ -158,14 +158,119 @@ function startNextProd() {
   });
 }
 
+// ─── Application Menu (with Help > Check for Updates) ───────────────────────
+function buildAppMenu() {
+  const version = app.getVersion();
+  const template = [
+    // On Windows/Linux the first menu entry is the app name menu
+    {
+      label: "SermonThumb",
+      submenu: [
+        { role: "quit" },
+      ],
+    },
+    {
+      label: "Edit",
+      submenu: [
+        { role: "undo" },
+        { role: "redo" },
+        { type: "separator" },
+        { role: "cut" },
+        { role: "copy" },
+        { role: "paste" },
+        { role: "selectAll" },
+      ],
+    },
+    {
+      label: "View",
+      submenu: [
+        { role: "reload" },
+        { role: "forceReload" },
+        { type: "separator" },
+        { role: "resetZoom" },
+        { role: "zoomIn" },
+        { role: "zoomOut" },
+        { type: "separator" },
+        { role: "togglefullscreen" },
+      ],
+    },
+    {
+      label: "Help",
+      submenu: [
+        {
+          label: `About SermonThumb v${version}`,
+          click: () => {
+            dialog.showMessageBox(mainWindow || undefined, {
+              type:    "info",
+              title:   `SermonThumb v${version}`,
+              message: `SermonThumb v${version}`,
+              detail:  "AI-powered sermon thumbnail generator for churches.\n\nMade with ❤️ by Vexona Studios.",
+              buttons: ["OK"],
+            });
+          },
+        },
+        { type: "separator" },
+        {
+          id:    "check-for-updates-menu",
+          label: "Check for Updates…",
+          click: async () => {
+            if (!IS_PROD) {
+              dialog.showMessageBox(mainWindow || undefined, {
+                type:    "info",
+                title:   "Check for Updates",
+                message: "Update checks are not available in development mode.",
+                buttons: ["OK"],
+              });
+              return;
+            }
+            try {
+              const result = await autoUpdater.checkForUpdates();
+              const info = result?.updateInfo;
+              if (info && info.version !== app.getVersion()) {
+                // Update available — autoUpdater will download & show restart dialog
+                dialog.showMessageBox(mainWindow || undefined, {
+                  type:    "info",
+                  title:   "Update Available",
+                  message: `SermonThumb v${info.version} is available!`,
+                  detail:  "The update will be downloaded in the background. You'll be prompted to restart when it's ready.",
+                  buttons: ["OK"],
+                });
+              } else {
+                dialog.showMessageBox(mainWindow || undefined, {
+                  type:    "info",
+                  title:   "You're up to date!",
+                  message: `SermonThumb v${app.getVersion()} is the latest version.`,
+                  buttons: ["OK"],
+                });
+              }
+            } catch (e) {
+              dialog.showMessageBox(mainWindow || undefined, {
+                type:    "error",
+                title:   "Update Check Failed",
+                message: "Could not check for updates.",
+                detail:  e.message,
+                buttons: ["OK"],
+              });
+            }
+          },
+        },
+      ],
+    },
+  ];
+
+  const menu = Menu.buildFromTemplate(template);
+  Menu.setApplicationMenu(menu);
+}
+
 // ─── Create the Electron window ───────────────────────────────────────────────
 function createWindow() {
+  const version = app.getVersion();
   mainWindow = new BrowserWindow({
     width:     1400,
     height:    900,
     minWidth:  900,
     minHeight: 600,
-    title:     "SermonThumb",
+    title:     `SermonThumb v${version}`,
     icon:      IS_PROD
       ? path.join(process.resourcesPath, "app", ".next", "standalone", "public", "icon.png")
       : path.join(__dirname, "..", "public", "icon.png"),
@@ -323,6 +428,42 @@ ipcMain.handle("install-update", () => {
   autoUpdater.quitAndInstall();
 });
 
+// ─── IPC: read settings (direct file I/O — bypasses Next.js route) ───────────
+ipcMain.handle("read-settings", () => {
+  return readSettingsSync();
+});
+
+// ─── IPC: write settings (direct file I/O — bypasses Next.js route) ──────────
+ipcMain.handle("write-settings", (_event, data) => {
+  try {
+    const settingsPath = getSettingsPath();
+    // Ensure the directory exists
+    const dir = path.dirname(settingsPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+    // Merge with existing so a partial save never clobbers other keys
+    const existing = readSettingsSync();
+    const merged = { ...existing, ...data };
+    fs.writeFileSync(settingsPath, JSON.stringify(merged, null, 2), "utf-8");
+
+    // Also keep the standalone copy in sync so the Next.js server can still
+    // serve the GET /api/settings response (used for display only, not auth).
+    if (IS_PROD) {
+      try {
+        const standaloneDest = path.join(
+          process.resourcesPath, "app", ".next", "standalone", ".thumbgen-settings.json"
+        );
+        fs.writeFileSync(standaloneDest, JSON.stringify(merged, null, 2), "utf-8");
+      } catch { /* non-fatal */ }
+    }
+
+    return { ok: true };
+  } catch (err) {
+    console.error("[main] write-settings error:", err.message);
+    return { ok: false, error: err.message };
+  }
+});
+
 // ─── IPC: get/set settings path for renderer ──────────────────────────────────
 ipcMain.handle("get-settings-path", () => {
   return getSettingsPath();
@@ -330,6 +471,8 @@ ipcMain.handle("get-settings-path", () => {
 
 // ─── App lifecycle ────────────────────────────────────────────────────────────
 app.whenReady().then(async () => {
+  buildAppMenu();
+
   const alreadyRunning = await isNextRunning();
 
   if (alreadyRunning) {
@@ -374,22 +517,10 @@ app.on("activate", () => {
 });
 
 app.on("before-quit", () => {
-  // In production, sync settings back from standalone dir to user data
-  if (IS_PROD) {
-    try {
-      const standaloneSettings = path.join(
-        process.resourcesPath,
-        "app", ".next", "standalone", ".thumbgen-settings.json"
-      );
-      const userDataSettings = getSettingsPath();
-      if (fs.existsSync(standaloneSettings)) {
-        fs.copyFileSync(standaloneSettings, userDataSettings);
-      }
-    } catch (e) {
-      console.warn("[main] Could not sync settings on quit:", e.message);
-    }
-  }
-
+  // NOTE: We do NOT copy settings from the standalone dir back to userdata here.
+  // The Next.js API route already writes directly to the userdata path
+  // (via SERMONTHUMB_SETTINGS_PATH env var). Copying the startup snapshot back
+  // would overwrite any changes the user made during the session.
   if (nextProcess) { nextProcess.kill(); nextProcess = null; }
 });
 

@@ -1,7 +1,11 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("electronAPI", {
-  // Auto-updater
+  // ── Settings (IPC-based — always uses the correct userdata path) ──────────
+  readSettings:  ()       => ipcRenderer.invoke("read-settings"),
+  writeSettings: (data)   => ipcRenderer.invoke("write-settings", data),
+
+  // ── Auto-updater ───────────────────────────────────────────────────────────
   checkForUpdates:  () => ipcRenderer.invoke("check-for-updates"),
   installUpdate:    () => ipcRenderer.invoke("install-update"),
   onUpdateAvailable:       (cb) => ipcRenderer.on("update-available",        (_e, data) => cb(data)),

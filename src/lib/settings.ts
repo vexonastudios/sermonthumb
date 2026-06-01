@@ -1,9 +1,17 @@
 "use client";
 
 /**
- * Settings are persisted to disk via /api/settings (a JSON file).
- * localStorage is used as a fast in-memory cache only.
- * This means settings survive Electron relaunches and session resets.
+ * Settings persistence strategy:
+ *
+ *  1. ELECTRON (production & dev with electron): All reads/writes go through
+ *     window.electronAPI.readSettings() / writeSettings() via Electron IPC.
+ *     The main process always resolves the correct userdata path, so settings
+ *     survive updates and reinstalls.
+ *
+ *  2. WEB DEV (plain `next dev` without electron): Falls back to /api/settings
+ *     (reads/writes .thumbgen-settings.json in the project root).
+ *
+ *  localStorage is used as a fast in-session cache in both cases.
  */
 
 export interface AppSettings {
@@ -37,6 +45,17 @@ export const DEFAULT_SETTINGS: AppSettings = {
   customSpeakerNames: [],
 };
 
+// ─── Detect Electron IPC ──────────────────────────────────────────────────────
+function getElectronAPI() {
+  if (typeof window !== "undefined" && (window as unknown as Record<string, unknown>).electronAPI) {
+    return (window as unknown as { electronAPI: {
+      readSettings:  () => Promise<Record<string, unknown>>;
+      writeSettings: (data: Record<string, unknown>) => Promise<{ ok: boolean; error?: string }>;
+    }}).electronAPI;
+  }
+  return null;
+}
+
 // ─── localStorage cache (fast, session-only) ──────────────────────────────────
 export function loadSettings(): AppSettings {
   if (typeof window === "undefined") return DEFAULT_SETTINGS;
@@ -54,63 +73,95 @@ function cacheSettings(settings: AppSettings): void {
   localStorage.setItem(LS_KEY, JSON.stringify(settings));
 }
 
-// ─── Server-persisted (survives Electron relaunches) ─────────────────────────
+// ─── Persistent read (survives Electron relaunches) ───────────────────────────
 export async function loadSettingsFromServer(): Promise<AppSettings> {
+  const api = getElectronAPI();
+
+  if (api) {
+    // ── Electron: read directly from userdata via IPC ──────────────────────
+    try {
+      const data = await api.readSettings();
+      const merged = { ...DEFAULT_SETTINGS, ...data } as AppSettings;
+      cacheSettings(merged);
+      return merged;
+    } catch (err) {
+      console.warn("[settings] IPC read failed, using localStorage cache:", err);
+      return loadSettings();
+    }
+  }
+
+  // ── Web dev fallback: use the Next.js API route ────────────────────────────
   try {
     const res = await fetch("/api/settings");
-    if (!res.ok) return DEFAULT_SETTINGS;
+    if (!res.ok) return loadSettings();
     const data = await res.json();
-    const merged = { ...DEFAULT_SETTINGS, ...data };
-    cacheSettings(merged);   // warm the localStorage cache
+    const merged = { ...DEFAULT_SETTINGS, ...data } as AppSettings;
+    cacheSettings(merged);
     return merged;
   } catch {
-    return loadSettings();   // fall back to localStorage if server unreachable
+    return loadSettings();
   }
 }
 
+// ─── Persistent write ─────────────────────────────────────────────────────────
 export async function saveSettings(settings: Partial<AppSettings>): Promise<void> {
-  // Only update localStorage with the keys we're actually changing,
-  // merged on top of whatever is already cached (not DEFAULT_SETTINGS).
+  // Update localStorage cache immediately (merge on top of current cache)
   const current = loadSettings();
   const merged = { ...current, ...settings };
   cacheSettings(merged as AppSettings);
 
-  // Strip undefined values and empty-string overrides for sensitive fields
-  // so a partial save (e.g. saving font prefs) never clobbers API keys on disk.
+  // Strip empty sensitive values so a partial save never clobbers API keys on disk
   const SENSITIVE: (keyof AppSettings)[] = [
     "youtubeClientId", "youtubeClientSecret", "geminiApiKey",
     "falAiApiKey", "channelLogoBase64", "youtubeRedirectUri",
   ];
   const payload: Partial<AppSettings> = {};
   for (const [k, v] of Object.entries(settings) as [keyof AppSettings, unknown][]) {
-    // Skip sensitive keys if the value being saved is empty — don't overwrite
-    // a real value on disk with an empty string from a stale in-memory state.
     if (SENSITIVE.includes(k) && (v === "" || v === undefined || v === null)) continue;
     if (v !== undefined) (payload as Record<string, unknown>)[k] = v;
   }
 
   if (Object.keys(payload).length === 0) return; // nothing safe to write
 
-  try {
-    const res = await fetch("/api/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => res.statusText);
-      throw new Error(`Server returned ${res.status}: ${text}`);
+  const api = getElectronAPI();
+
+  if (api) {
+    // ── Electron: write directly to userdata via IPC ───────────────────────
+    const result = await api.writeSettings(payload as Record<string, unknown>);
+    if (!result.ok) {
+      throw new Error(result.error || "IPC write-settings failed");
     }
-  } catch (err) {
-    console.error("Failed to persist settings to disk:", err);
-    // Re-throw so the UI can catch it and show an error to the user
-    throw err;
+    return;
+  }
+
+  // ── Web dev fallback: use the Next.js API route ────────────────────────────
+  const res = await fetch("/api/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText);
+    throw new Error(`Server returned ${res.status}: ${text}`);
   }
 }
 
+// ─── Clear ────────────────────────────────────────────────────────────────────
 export function clearSettings(): void {
   if (typeof window === "undefined") return;
   localStorage.removeItem(LS_KEY);
+
+  const api = getElectronAPI();
+  if (api) {
+    // Write an empty-ish object — IPC handler merges, so this resets to defaults
+    api.writeSettings({
+      youtubeClientId: "", youtubeClientSecret: "", youtubeRedirectUri: "",
+      geminiApiKey: "", falAiApiKey: "", channelLogoBase64: "",
+      defaultGradient: "slate", completedVideoIds: [], customSpeakerNames: [],
+    } as Record<string, unknown>).catch(() => {});
+    return;
+  }
+
   fetch("/api/settings", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -145,7 +196,7 @@ export function buildApiHeaders(settings?: AppSettings): Record<string, string> 
 }
 
 /**
- * Async version — re-fetches from the server to guarantee fresh API keys.
+ * Async version — re-fetches from disk to guarantee fresh API keys.
  * Use this in any flow where keys might not be in localStorage yet.
  */
 export async function buildApiHeadersAsync(): Promise<Record<string, string>> {
